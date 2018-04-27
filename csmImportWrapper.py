@@ -57,13 +57,18 @@ def getExecutionStatus(logFilePath,logType):
                 break
     elif logType == "sql":
         for lines in logfile:
-            if 'procedure successfully completed' in lines:
+            if 'procedure successfully completed' in lines or 'Commit complete' in lines:
                 completeStatus = "SUCCESS"
 
     elif logType == "atkMigration":
         for lines in logfile:
             if 'ALL: Migration completed successfully' in lines:
                 completeStatus = "SUCCESS"
+                break
+    elif logType == "roleCreation":
+        for lines in logfile:
+            if 'SUCCESS' in lines:
+                completeStatus= "SUCCESS"
                 break
 
     print(completeStatus)        
@@ -99,12 +104,12 @@ def executeCRMMbean():
             print("\nExecuting CRM Mbean :")
             logger.info("Executing CRM Mbean :")
             crmMbeanCosole = os.path.join(mbeanLogPath,"crmMbeanCosole.out")
-            os.system("sed -i 's#\[%3\]#"+weblogic_url+"#g' "+crmMbeantemplate)
+            # os.system("sed -i 's#\[%3\]#"+weblogic_url+"#g' "+crmMbeantemplate)
             print("\n"+wlstPath+" "+crmMbeantemplate+" "+w_user+" "+"****"+" "+weblogic_url+ " > " +crmMbeanCosole)
             logger.info(wlstPath+" "+crmMbeantemplate+" "+w_user+" "+"****"+" "+weblogic_url+ " > " +crmMbeanCosole)
             os.system(wlstPath+" "+crmMbeantemplate+" "+w_user+" "+w_pass+" "+weblogic_url+ " > " +crmMbeanCosole)
 
-            os.system("sed -i 's#"+weblogic_url+"#\[%3\]#g' "+crmMbeantemplate)
+            # os.system("sed -i 's#"+weblogic_url+"#\[%3\]#g' "+crmMbeantemplate)
             crmMbeanstatus = getExecutionStatus(crmMbeanCosole,"crmMbean")
 
             print("\n See the log "+str(crmMbeanCosole)+" for more details")
@@ -164,9 +169,6 @@ def executeATKMigration():
         logger.info("Executing ATK Migration script ")
         with open('pwd.txt','w') as f:
                 f.write(fusion_mds_pass)
-        #f= open("pwd.txt","w+")
-        #f.write(fusion_mds_pass)
-        #os.system("chmod 744 "+"pwd.txt")
 
         print("\n"+atk_migration_script+" "+database_connect_string+" fusion_mds "+"/u01/APPLTOP"+" "+atk_migration_log+" "+JAVA_HOME+" < pwd.txt")
         logger.info(atk_migration_script+" "+database_connect_string+" fusion_mds "+"/u01/APPLTOP"+" "+atk_migration_log+" "+JAVA_HOME+" < pwd.txt")
@@ -268,8 +270,22 @@ def preUpgradeMdsBackup():
         print("\nPlease specify correct path of the CSM jar in the config.properties")
         exit(1)
 def createCustomRolesInCSM(csm_path):
-    os.system("java -jar customRole/CSMRoleExtractor.jar "+ csm_path+" customRole/customRole.temp")
-    os.system(wlstPath +" "+ "customRole/customRole.temp")
+    fa_host_name=w_host[0:w_host.find('.')]
+    print("Creating Missing duty roles")
+    logger.info("Creating Missing duty roles")
+    os.system(JAVA_HOME+"/bin/java -jar customRole/CSMRoleExtractor.jar "+ csm_path+" customRole/customRole.temp")
+    os.system("sed -i '0,/changeme/{s/changeme/"+w_user+"/}' "+"customRole/customRole.temp")
+    os.system("sed -i '0,/changeme/{s/changeme/"+w_pass+"/}' "+"customRole/customRole.temp")
+    os.system("sed -i '0,/changeme/{s/changeme/"+fa_host_name+"/}' "+"customRole/customRole.temp")
+    os.system("sed -i '0,/adminport#/{s/adminport#/"+"11401"+"/}' "+"customRole/customRole.temp")
+    print(wlstPath +" "+ "customRole/customRole.temp "+"> "+"customRole/roleCreation.out")
+    logger.info(wlstPath +" "+ "customRole/customRole.temp "+"> "+"customRole/roleCreation.out")
+    os.system(wlstPath +" "+ "customRole/customRole.temp" +"> "+"customRole/roleCreation.out")
+    roleCreationStatus=getExecutionStatus("customRole/roleCreation.out","roleCreation")
+    if roleCreationStatus =="SUCCESS":
+        print("Successfully Created Missing roles")
+    else:
+        print("Required jars not pathed in env , should create missing roles via UI")
     
 def assignORA_CRM_EXTN_ROLE():
     #Create the role first and then assign it to the users
@@ -326,6 +342,7 @@ if len(sys.argv) == 5 or len(sys.argv) == 7:
     disableBI = configMap["disableBI"]
     execMDSScripts=configMap["executeMDSScripts"]
     users=configMap["users"]
+    createCustomRole=configMap["createCustomRole"]
     #Ensure required values are filled up in config.properties file
     validateConfigProperties(configMap)
 
@@ -342,6 +359,8 @@ if len(sys.argv) == 5 or len(sys.argv) == 7:
     mbeanLogPath = os.path.join(adf_crm_mbean_scriptpath,'logs')
     if not os.path.isdir(mbeanLogPath):
         os.makedirs(mbeanLogPath)
+    if not os.path.isdir(JAVA_HOME):
+        JAVA_HOME=os.environ["JAVA_HOME"]
 
     weblogic_url= "t3://"+w_host+":"+w_port
     database_connect_string = "jdbc:oracle:thin:@"+db_host+":"+db_port+"/"+oracle_sid
@@ -392,6 +411,10 @@ if len(sys.argv) == 5 or len(sys.argv) == 7:
                 #Executing Pre Import sqls : Disblin BI , Removing HRT_POTENTAIL_MEMBER reference from database
                 # if disable BI is false should remove the corresponding sql
                 executeSqls()
+                if createCustomRole=="true":
+                    createCustomRolesInCSM(csm_path)
+                else:
+                    print("NEED TO MANUALLY CREATE ROLES via UI")
                 
                 print("\nPre Import Succeeded. Continue with Importing CSM jar via UI")
             else:
@@ -411,12 +434,12 @@ if len(sys.argv) == 5 or len(sys.argv) == 7:
                 if(len(sys.argv) == 7 ):
                     execution_type = sys.argv[5]
                     resumePoint=sys.argv[6]
-                    if resumePoint is not None and resumePoint in executionList:
-                        start = executionList.index(resumePoint)
-                    else:
-                        print_help()
-                        exit(1)
                     if execution_type == "resume":
+                        if resumePoint is not None and resumePoint in executionList:
+                            start = executionList.index(resumePoint)
+                        else:
+                            print_help()
+                            exit(1)
                         logger.info("Resuming from "+resumePoint+"\n")
                         for i in range(start,len(executionList)):
                             if " " in executionList[i]:
