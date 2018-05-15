@@ -9,9 +9,9 @@ from datetime import datetime
 
 
 def print_help():
-    print("The command to run the script is : \n python postCsmImport.py <mode : (post/pre)> <rootPath> <weblogic user> <weblogic password>")
-    print("\nThe command to run the script for resuming from a point for post import is : \n python postCsmImport.py post <rootPath> <weblogic user> <weblogic password> resume <Resume point>")
-    print("\nThe command to execute a specific task : \n python python postCsmImport.py <mode : (post/pre)> <rootPath> <weblogic user> <weblogic password> execute <executionPoint>")
+    print("The command to run the script is : \n python csmImportWrapper.py <mode : (post/pre)> <rootPath> <weblogic user> <weblogic password>")
+    print("\nThe command to run the script for resuming from a point for post import is : \n python csmImportWrapper.py post <rootPath> <weblogic user> <weblogic password> resume <Resume point>")
+    print("\nThe command to execute a specific task : \n python csmImportWrapper.py <mode : (post/pre)> <rootPath> <weblogic user> <weblogic password> execute <executionPoint>")
     print("\nPossible Resume_Point/Execution_Point values : \"executeADFMbean\" , \"executeCRMMbean\" , \"takeMdsBackup postUpgrade\" , \"executeSqls\" , \"executeATKMigration\" ,\"executeApplyDefferedTask\", \"takeMdsBackup preMDSScript\",\"executeMDSScripts\",\"takeMdsBackup postMDSScript\", \"essSubmitRequest\"")
     print("NOTE : Resume_Point/Execution_Point values should be given in double quotes itself")
 
@@ -68,6 +68,11 @@ def getExecutionStatus(logFilePath,logType):
     elif logType == "roleCreation":
         for lines in logfile:
             if 'SUCCESS' in lines:
+                completeStatus= "SUCCESS"
+                break
+    elif logType == "ess":
+        for lines in logfile:
+             if 'Successfully submitted job request' in lines:
                 completeStatus= "SUCCESS"
                 break
 
@@ -151,7 +156,7 @@ def executeSqls():
     else:
         os.system("rsync -avz "+"sqls/"+mode+"Import/* "+db_host+":"+sqlScriptsLocInDbHost)
 
-    os.system("ssh -o \"StrictHostKeyChecking no\" "+db_host+" \"bash -s\" < ./executeSqls.sh "+sqlScriptsLocInDbHost+" "+db_host+" "+db_port+" "+oracle_sid+" >> ../logs/"+mode+"_sql.log")
+    os.system("ssh -o \"StrictHostKeyChecking no\" "+db_host+" \"bash -s\" < ./executeSqls.sh "+sqlScriptsLocInDbHost+" "+db_host+" "+db_port+" "+oracle_sid+" "+oracle_home+" >> ../logs/"+mode+"_sql.log")
     sqlStatus = getExecutionStatus("../logs/"+mode+"_sql.log","sql")
     print("\n See the log "+"../logs/"+mode+"_sql.log"+" for more details")
     logger.info("See the log "+"../logs/"+mode+"_sql.log"+" for more details")
@@ -229,11 +234,16 @@ def executeMDSScripts(*args):
 
 def essSubmitRequest():
     print("\nSubmitting ESS request")
-    print("\n"+"/u01/APPLTOP/fusionapps/atgpf/common/bin/wlst.sh"+" "+rootPath+"/scripts/essSubmitRequest.py"+" "+"FUSION_APPS_CRM_SOA_APPID"+" "+"\""+FUSION_APPS_CRM_SOA_APPID_pass+"\""+" "+weblogic_url)
-    logger.info("/u01/APPLTOP/fusionapps/atgpf/common/bin/wlst.sh"+" "+rootPath+"/scripts/essSubmitRequest.py"+" "+"FUSION_APPS_CRM_SOA_APPID"+" "+"\""+FUSION_APPS_CRM_SOA_APPID_pass+"\""+" "+weblogic_url)
-    os.system("/u01/APPLTOP/fusionapps/atgpf/common/bin/wlst.sh"+" "+rootPath+"/scripts/essSubmitRequest.py"+" "+"FUSION_APPS_CRM_SOA_APPID"+" "+"\""+FUSION_APPS_CRM_SOA_APPID_pass+"\""+" "+weblogic_url)
-    print("\nEss Submitted Successfully")
-    logger.info("Ess Submitted Successfully\n")
+    print("\n"+"/u01/APPLTOP/fusionapps/atgpf/common/bin/wlst.sh"+" "+rootPath+"/scripts/essSubmitRequest.py"+" "+"FUSION_APPS_CRM_SOA_APPID"+" "+"\""+FUSION_APPS_CRM_SOA_APPID_pass+"\""+" "+ess_weblogic_url)
+    logger.info("/u01/APPLTOP/fusionapps/atgpf/common/bin/wlst.sh"+" "+rootPath+"/scripts/essSubmitRequest.py"+" "+"FUSION_APPS_CRM_SOA_APPID"+" "+"\""+FUSION_APPS_CRM_SOA_APPID_pass+"\""+" "+ess_weblogic_url)
+    os.system("/u01/APPLTOP/fusionapps/atgpf/common/bin/wlst.sh"+" "+rootPath+"/scripts/essSubmitRequest.py"+" "+"FUSION_APPS_CRM_SOA_APPID"+" "+"\""+FUSION_APPS_CRM_SOA_APPID_pass+"\""+" "+ess_weblogic_url+" > "+logPath+"/essRequest.out")
+    submissionStatus=getExecutionStatus(logPath+"/essRequest.out","ess")
+    if submissionStatus == "SUCCESS":
+        print("\nEss Submitted Successfully")    
+        logger.info("Ess Submitted Successfully\n")
+    else:
+        print("ESS Submission failed , Please check "+logPath+"/essRequest.out")
+        exit(1)
 
 def executeApplyDefferedTask():
     if os.path.isfile("/u01/APPLTOP/fusionapps/applications/lcm/ad/bin/applydeferredtasks.sh"):
@@ -293,7 +303,41 @@ def assignORA_CRM_EXTN_ROLE():
     print("Custom role created")
     os.system(wlstPath+" "+rootPath+"/scripts/assignRole.py "+w_user+" "+w_pass+" "+weblogic_url+" "+users)
 
+#Function to import the CSM File:
+def importCSM(w_host,csmName,csm_path,username,password):
+    encoded = base64.b64encode(username + ':' + password)
+    print("Encoded", encoded)
+    print(type(encoded))
 
+    print(w_host)
+    print(csmName)
+    print("csm path", csm_path)
+    url = "https://" + w_host + "/fscmUI/applcorerestservice/actions/importcustomization"
+    print(url)
+
+    payload1 = '{\"name\":\"importcustomization\",\"resources\":[{\"name\":'
+    payload2 = '"' + csmName + '"'
+    payload3 = ',\"type\":\"JAR\",\"location\":'
+    payload4 = '"' + csm_path + '"'
+    payload5 = '}],\"actionRequestProperties\":[{\"key\":\"FileLocation\",\"value\":'
+    payload6 = '"' + csm_path + '"'
+    payload7 = '}],\"provisioningProperties\":[{\"key\":\"dummy\",\"value\":\"dummy\"}]}'
+
+    payload = payload1 + payload2 + payload3 + payload4 + payload5 + payload6 + payload7
+
+    print(payload)
+
+    headers = {
+        'content-type': "application/json",
+        # 'authorization': "Basic YXBwbGljYXRpb25faW1wbGVtZW50YXRpb25fY29uc3VsdGFudDpXZWxjb21lMQ==",
+        'authorization': "Basic " + str(encoded),
+        'cache-control': "no-cache",
+        'postman-token': "911c6518-6416-d416-e5f9-6c5ed519187b"
+    }
+    print("HEADER: ", headers)
+    response = requests.request("POST", url, data=payload, headers=headers)
+
+    print(response.text)
 
 #Logging framwork
 logger = logging.getLogger(__name__)
@@ -343,6 +387,16 @@ if len(sys.argv) == 5 or len(sys.argv) == 7:
     execMDSScripts=configMap["executeMDSScripts"]
     users=configMap["users"]
     createCustomRole=configMap["createCustomRole"]
+    essSoaServerPort=configMap["ess_soa_server_port"]
+    oracle_home=configMap["oracle_home"]
+
+    #CSM Import Variables Start
+    csm_path = configMap["csm_path"]
+    username = configMap["username"]
+    password = configMap["password"]
+    csmName = os.path.basename(csm_path)
+    #CSM Import Variables End
+    
     #Ensure required values are filled up in config.properties file
     validateConfigProperties(configMap)
 
@@ -363,6 +417,7 @@ if len(sys.argv) == 5 or len(sys.argv) == 7:
         JAVA_HOME=os.environ["JAVA_HOME"]
 
     weblogic_url= "t3://"+w_host+":"+w_port
+    ess_weblogic_url = "t3://"+w_host+":"+essSoaServerPort
     database_connect_string = "jdbc:oracle:thin:@"+db_host+":"+db_port+"/"+oracle_sid
 
     adfupgradescript=os.path.join(adf_crm_mbean_scriptpath,"adfupgradescript.py")
@@ -422,7 +477,10 @@ if len(sys.argv) == 5 or len(sys.argv) == 7:
                 print("\nNo Resume Point Argument expected for Pre import\n")
                 print_help()
                 exit(0)
-        
+        # CSM import 
+
+
+        # succes : .....
         #Post Import
         if mode == "post":            
             try:
@@ -430,6 +488,7 @@ if len(sys.argv) == 5 or len(sys.argv) == 7:
                 if execMDSScripts.lower() == "false":
                     executionList.remove("executeMDSScripts")
                     executionList.remove("takeMdsBackup postMDSScript")
+                    print("Make the value of executeMDSScripts to true in config.properties and copy neccessary MDS scripts to "+mdsScriptPath+" corresponding to the branch and execute again to execute MDS scripts , other wise please continue")
                 #Resuming from a particualr point in post import
                 if(len(sys.argv) == 7 ):
                     execution_type = sys.argv[5]
